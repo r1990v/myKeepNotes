@@ -11,6 +11,12 @@ class KeepNotes {
         this.pendingImages = [];
         this.pendingDocuments = [];
         this.pendingLabels = [];
+        this.pendingVoiceNotes = [];
+
+        // Voice recording state
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.isRecording = false;
         this.editingNoteId = null;
         this.isReadOnlyMode = false;
         this.isDarkMode = false;
@@ -237,7 +243,27 @@ class KeepNotes {
             navTrash: document.getElementById('navTrash'),
             editLabelsBtn: document.getElementById('editLabelsBtn'),
             remindersHeader: document.getElementById('remindersHeader'),
-            archiveHeader: document.getElementById('archiveHeader')
+            archiveHeader: document.getElementById('archiveHeader'),
+
+            // Formatting toolbar
+            formattingToolbar: document.getElementById('formattingToolbar'),
+            formatBtns: document.querySelectorAll('#formattingToolbar .format-btn[data-command]'),
+            textColorBtn: document.getElementById('textColorBtn'),
+            textColorPicker: document.getElementById('textColorPicker'),
+            voiceNoteBtn: document.getElementById('voiceNoteBtn'),
+            voiceNoteContainer: document.getElementById('voiceNoteContainer'),
+            voiceNoteList: document.getElementById('voiceNoteList'),
+
+            // Modal voice notes
+            modalVoiceNoteBtn: document.getElementById('modalVoiceNoteBtn'),
+            modalVoiceNotesContainer: document.getElementById('modalVoiceNotesContainer'),
+            modalVoiceNotesList: document.getElementById('modalVoiceNotesList'),
+
+            // Modal formatting toolbar
+            modalFormattingToolbar: document.getElementById('modalFormattingToolbar'),
+            modalFormatBtns: document.querySelectorAll('#modalFormattingToolbar .format-btn[data-command]'),
+            modalTextColorBtn: document.getElementById('modalTextColorBtn'),
+            modalTextColorPicker: document.getElementById('modalTextColorPicker')
         };
     }
 
@@ -258,7 +284,7 @@ class KeepNotes {
 
         // Auto-detect type
         els.noteContent.addEventListener('input', () => {
-            const detectedType = this.detectContentType(els.noteContent.value);
+            const detectedType = this.detectContentType(els.noteContent.innerText);
             if (detectedType !== 'text' && els.noteType.value === 'text') {
                 els.noteType.value = detectedType;
                 this.updateTextareaMode(els.noteContent, detectedType);
@@ -469,6 +495,148 @@ class KeepNotes {
         els.anonymousSignInBtn.addEventListener('click', () => this.handleAnonymousSignIn());
         els.signOutBtn.addEventListener('click', () => this.handleSignOut());
         els.showGlobalNotesCheckbox.addEventListener('change', (e) => this.toggleGlobalNotes(e.target.checked));
+
+        // Rich text formatting toolbar
+        els.formatBtns.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.execFormatCommand(btn.dataset.command, btn.dataset.value);
+            });
+        });
+
+        // Text color picker
+        els.textColorBtn?.addEventListener('click', () => {
+            els.textColorPicker?.click();
+        });
+        els.textColorPicker?.addEventListener('input', (e) => {
+            this.execFormatCommand('foreColor', e.target.value);
+            els.textColorBtn.querySelector('.color-indicator').style.color = e.target.value;
+        });
+
+        // Voice note recording
+        els.voiceNoteBtn?.addEventListener('click', () => this.toggleVoiceRecording());
+        els.modalVoiceNoteBtn?.addEventListener('click', () => this.toggleModalVoiceRecording());
+
+        // Modal formatting toolbar
+        els.modalFormatBtns?.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.execModalFormatCommand(btn.dataset.command, btn.dataset.value);
+            });
+        });
+
+        // Modal text color picker
+        els.modalTextColorBtn?.addEventListener('click', () => {
+            els.modalTextColorPicker?.click();
+        });
+        els.modalTextColorPicker?.addEventListener('input', (e) => {
+            this.execModalFormatCommand('foreColor', e.target.value);
+            els.modalTextColorBtn.querySelector('.color-indicator').style.color = e.target.value;
+        });
+
+        // Keyboard shortcuts for formatting in modal rich editor
+        els.editContent?.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                switch(e.key.toLowerCase()) {
+                    case 'b':
+                        e.preventDefault();
+                        this.execModalFormatCommand('bold');
+                        break;
+                    case 'i':
+                        e.preventDefault();
+                        this.execModalFormatCommand('italic');
+                        break;
+                    case 'u':
+                        e.preventDefault();
+                        this.execModalFormatCommand('underline');
+                        break;
+                }
+            }
+
+            // Handle Enter key for proper line breaks after checkboxes
+            if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                this.handleEnterInEditor(e, els.editContent);
+            }
+        });
+
+        // Handle contenteditable placeholder
+        els.noteContent?.addEventListener('focus', () => {
+            if (els.noteContent.innerHTML === '' || els.noteContent.innerHTML === '<br>') {
+                els.noteContent.innerHTML = '';
+            }
+        });
+        els.noteContent?.addEventListener('blur', () => {
+            if (els.noteContent.innerHTML === '' || els.noteContent.innerHTML === '<br>') {
+                els.noteContent.innerHTML = '';
+            }
+        });
+
+        // Keyboard shortcuts for formatting in rich editor
+        els.noteContent?.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey) {
+                switch(e.key.toLowerCase()) {
+                    case 'b':
+                        e.preventDefault();
+                        this.execFormatCommand('bold');
+                        break;
+                    case 'i':
+                        e.preventDefault();
+                        this.execFormatCommand('italic');
+                        break;
+                    case 'u':
+                        e.preventDefault();
+                        this.execFormatCommand('underline');
+                        break;
+                    case 'enter':
+                        e.preventDefault();
+                        this.addNote();
+                        break;
+                }
+            }
+
+            // Handle Enter key for proper line breaks after checkboxes
+            if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                this.handleEnterInEditor(e, els.noteContent);
+            }
+        });
+    }
+
+    // Handle Enter key in rich editor for proper line breaks
+    handleEnterInEditor(e, editorElement) {
+        const selection = window.getSelection();
+        if (!selection.rangeCount) return;
+
+        const range = selection.getRangeAt(0);
+        let currentNode = range.startContainer;
+
+        // Find if we're inside a checkbox-item
+        let checkboxItem = null;
+        let node = currentNode;
+        while (node && node !== editorElement) {
+            if (node.classList && node.classList.contains('checkbox-item')) {
+                checkboxItem = node;
+                break;
+            }
+            node = node.parentNode;
+        }
+
+        if (checkboxItem) {
+            e.preventDefault();
+
+            // Create a new div for the new line
+            const newLine = document.createElement('div');
+            newLine.innerHTML = '<br>';
+
+            // Insert after the checkbox
+            checkboxItem.after(newLine);
+
+            // Move cursor to the new line
+            const newRange = document.createRange();
+            newRange.setStart(newLine, 0);
+            newRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+        }
     }
 
     // Keyboard shortcuts handler
@@ -870,16 +1038,26 @@ class KeepNotes {
         }
 
         els.newNoteLabels.style.display = 'block';
-        els.newNoteLabelsList.innerHTML = this.pendingLabels.map(label => `
+        els.newNoteLabelsList.innerHTML = this.pendingLabels.map((label, index) => `
             <span class="note-label">
                 ${this.escapeHtml(label)}
-                <button onclick="keepNotes.removePendingLabel('${this.escapeHtml(label)}')">
+                <button class="remove-pending-label-btn" data-label-index="${index}">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </span>
         `).join('');
+
+        // Attach event handlers
+        els.newNoteLabelsList.querySelectorAll('.remove-pending-label-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.labelIndex);
+                if (this.pendingLabels[index]) {
+                    this.removePendingLabel(this.pendingLabels[index]);
+                }
+            });
+        });
     }
 
     removePendingLabel(label) {
@@ -894,16 +1072,27 @@ class KeepNotes {
             return;
         }
 
-        els.modalLabelsList.innerHTML = labels.map(label => `
+        els.modalLabelsList.innerHTML = labels.map((label, index) => `
             <span class="note-label">
                 ${this.escapeHtml(label)}
-                <button onclick="keepNotes.removeModalLabel('${this.escapeHtml(label)}')">
+                <button class="remove-modal-label-btn" data-label-index="${index}">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </span>
         `).join('');
+
+        // Attach event handlers
+        els.modalLabelsList.querySelectorAll('.remove-modal-label-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.labelIndex);
+                const note = this.notes.find(n => n.id === this.editingNoteId);
+                if (note && note.labels && note.labels[index]) {
+                    this.removeModalLabel(note.labels[index]);
+                }
+            });
+        });
     }
 
     removeModalLabel(label) {
@@ -2555,9 +2744,16 @@ class KeepNotes {
         els.imagePreviewList.innerHTML = this.pendingImages.map(img => `
             <div class="image-preview-item" data-id="${img.id}">
                 <img src="${img.data}" alt="${this.escapeHtml(img.name)}">
-                <button class="image-preview-remove" onclick="keepNotes.removePendingImage('${img.id}')">&times;</button>
+                <button class="image-preview-remove" data-remove-id="${img.id}">&times;</button>
             </div>
         `).join('');
+
+        // Attach event handlers
+        els.imagePreviewList.querySelectorAll('.image-preview-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.removePendingImage(btn.dataset.removeId);
+            });
+        });
     }
 
     removePendingImage(id) {
@@ -2591,10 +2787,23 @@ class KeepNotes {
         els.modalImageContainer.style.display = 'block';
         els.modalImageList.innerHTML = images.map(img => `
             <div class="image-preview-item" data-id="${img.id}">
-                <img src="${img.data}" alt="${this.escapeHtml(img.name)}" onclick="keepNotes.openImageViewer('${img.data.replace(/'/g, "\\'")}')">
-                <button class="image-preview-remove" onclick="keepNotes.removeModalImage('${img.id}')">&times;</button>
+                <img src="${img.data}" alt="${this.escapeHtml(img.name)}" class="modal-image-preview" data-image-id="${img.id}">
+                <button class="image-preview-remove" data-remove-id="${img.id}">&times;</button>
             </div>
         `).join('');
+
+        // Attach event handlers
+        els.modalImageList.querySelectorAll('.modal-image-preview').forEach(imgEl => {
+            imgEl.addEventListener('click', () => {
+                this.openImageViewer(imgEl.src);
+            });
+        });
+
+        els.modalImageList.querySelectorAll('.image-preview-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.removeModalImage(btn.dataset.removeId);
+            });
+        });
     }
 
     removeModalImage(id) {
@@ -2672,13 +2881,20 @@ class KeepNotes {
                     <div class="document-name">${this.escapeHtml(doc.name)}</div>
                     <div class="document-size">${this.formatFileSize(doc.size)}</div>
                 </div>
-                <button class="document-remove" onclick="keepNotes.removePendingDocument('${doc.id}')" title="Remove">
+                <button class="document-remove" data-remove-id="${doc.id}" title="Remove">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
         `).join('');
+
+        // Attach event handlers
+        els.documentPreviewList.querySelectorAll('.document-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.removePendingDocument(btn.dataset.removeId);
+            });
+        });
     }
 
     removePendingDocument(id) {
@@ -2717,18 +2933,31 @@ class KeepNotes {
                     <div class="document-name">${this.escapeHtml(doc.name)}</div>
                     <div class="document-size">${this.formatFileSize(doc.size)}</div>
                 </div>
-                <button class="document-download" onclick="keepNotes.downloadDocument('${doc.id}')" title="Download">
+                <button class="document-download" data-download-id="${doc.id}" title="Download">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
                     </svg>
                 </button>
-                <button class="document-remove" onclick="keepNotes.removeModalDocument('${doc.id}')" title="Remove">
+                <button class="document-remove" data-remove-id="${doc.id}" title="Remove">
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
         `).join('');
+
+        // Attach event handlers
+        els.modalDocumentList.querySelectorAll('.document-download').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.downloadDocument(btn.dataset.downloadId);
+            });
+        });
+
+        els.modalDocumentList.querySelectorAll('.document-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.removeModalDocument(btn.dataset.removeId);
+            });
+        });
     }
 
     removeModalDocument(id) {
@@ -2788,9 +3017,11 @@ class KeepNotes {
     addNote() {
         const els = this.elements;
         const title = els.noteTitle.value.trim();
-        const content = els.noteContent.value.trim();
+        // Get content from contenteditable div (innerHTML for rich text)
+        const content = els.noteContent.innerHTML.trim();
+        const plainContent = els.noteContent.innerText.trim();
 
-        if (!title && !content && this.pendingImages.length === 0 && this.pendingDocuments.length === 0) {
+        if (!title && !plainContent && this.pendingImages.length === 0 && this.pendingDocuments.length === 0 && this.pendingVoiceNotes.length === 0) {
             return;
         }
 
@@ -2802,6 +3033,7 @@ class KeepNotes {
             type: els.noteType.value,
             images: [...this.pendingImages],
             documents: [...this.pendingDocuments],
+            voiceNotes: [...this.pendingVoiceNotes],
             labels: [...this.pendingLabels],
             pinned: false,
             createdAt: new Date().toISOString(),
@@ -2814,18 +3046,23 @@ class KeepNotes {
 
         // Clear inputs
         els.noteTitle.value = '';
-        els.noteContent.value = '';
+        els.noteContent.innerHTML = '';
         els.noteType.value = 'text';
         els.noteContent.classList.remove('code-mode');
         this.selectedColor = '#ffffff';
         this.selectedType = 'text';
         this.pendingImages = [];
         this.pendingDocuments = [];
+        this.pendingVoiceNotes = [];
         this.pendingLabels = [];
         els.colorBtns.forEach(b => b.classList.remove('selected'));
         this.renderPendingImages();
         this.renderPendingDocuments();
         this.renderPendingLabels();
+
+        // Hide voice note container
+        els.voiceNoteContainer.style.display = 'none';
+        els.voiceNoteList.innerHTML = '';
 
         this.showToast('Note added');
     }
@@ -2839,7 +3076,7 @@ class KeepNotes {
 
         if (note) {
             note.title = els.editTitle.value;
-            note.content = els.editContent.value;
+            note.content = els.editContent.innerHTML;
             note.updatedAt = new Date().toISOString();
             this.saveData();
             this.renderNotes();
@@ -2882,7 +3119,7 @@ class KeepNotes {
 
         this.editingNoteId = noteId;
         els.editTitle.value = note.title;
-        els.editContent.value = note.content;
+        els.editContent.innerHTML = note.content || '';
         els.editNoteType.value = note.type || 'text';
         els.modalContent.style.backgroundColor = note.color;
 
@@ -2894,6 +3131,7 @@ class KeepNotes {
 
         this.renderModalImages(note.images);
         this.renderModalDocuments(note.documents);
+        this.renderModalVoiceNotes(note.voiceNotes);
         this.renderModalLabels(note.labels);
         this.updateModalPinButton();
 
@@ -3037,7 +3275,7 @@ class KeepNotes {
             tags += `
                 <div class="filter-tag">
                     Search: "${this.escapeHtml(this.searchQuery)}"
-                    <button onclick="keepNotes.clearSearch()">
+                    <button class="clear-search-btn">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                         </svg>
@@ -3049,7 +3287,7 @@ class KeepNotes {
             tags += `
                 <div class="filter-tag">
                     Label: ${this.escapeHtml(this.activeLabel)}
-                    <button onclick="keepNotes.filterByLabel('${this.escapeHtml(this.activeLabel)}')">
+                    <button class="clear-label-btn">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                         </svg>
@@ -3059,6 +3297,17 @@ class KeepNotes {
         }
 
         els.filterTags.innerHTML = tags;
+
+        // Attach event handlers
+        const clearSearchBtn = els.filterTags.querySelector('.clear-search-btn');
+        if (clearSearchBtn) {
+            clearSearchBtn.addEventListener('click', () => this.clearSearch());
+        }
+
+        const clearLabelBtn = els.filterTags.querySelector('.clear-label-btn');
+        if (clearLabelBtn) {
+            clearLabelBtn.addEventListener('click', () => this.filterByLabel(this.activeLabel));
+        }
     }
 
     // Render notes
@@ -3174,6 +3423,22 @@ class KeepNotes {
                 }
             });
         });
+
+        // Attach voice note play handlers
+        els.notesContainer.querySelectorAll('.voice-note-play-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const card = btn.closest('.note-card');
+                const noteId = card.dataset.id;
+                const audioIndex = parseInt(btn.dataset.audioIndex);
+
+                const allTrash = this.getCombinedTrash();
+                const note = allTrash.find(n => n.id === noteId);
+                if (note && note.voiceNotes && note.voiceNotes[audioIndex]) {
+                    this.playVoiceNote(note.voiceNotes[audioIndex].data, btn);
+                }
+            });
+        });
     }
 
     // Render archived notes
@@ -3215,12 +3480,50 @@ class KeepNotes {
                 this.moveArchivedToTrash(noteId);
             });
         });
+
+        // Attach voice note play handlers
+        els.notesContainer.querySelectorAll('.voice-note-play-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const card = btn.closest('.note-card');
+                const noteId = card.dataset.id;
+                const audioIndex = parseInt(btn.dataset.audioIndex);
+
+                const note = this.archive.find(n => n.id === noteId);
+                if (note && note.voiceNotes && note.voiceNotes[audioIndex]) {
+                    this.playVoiceNote(note.voiceNotes[audioIndex].data, btn);
+                }
+            });
+        });
     }
 
     // Create archive card HTML
     createArchiveCard(note) {
         const bgColor = this.getColorForMode(note.color || '#ffffff');
         const textColor = this.getTextColorForBg(note.color || '#ffffff');
+        const noteType = note.type || 'text';
+        const isCode = noteType !== 'text';
+
+        // For rich text content, display HTML directly
+        const displayContent = isCode ? this.escapeHtml(note.content) : note.content;
+
+        let voiceNotesHtml = '';
+        if (note.voiceNotes && note.voiceNotes.length > 0) {
+            voiceNotesHtml = `
+                <div class="note-card-voice-notes">
+                    ${note.voiceNotes.map((vn, index) => `
+                        <div class="note-voice-note-item">
+                            <button class="voice-note-play-btn" data-audio-index="${index}" title="Play voice note">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                            </button>
+                            <span class="voice-note-label">Voice ${index + 1}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
 
         return `
             <div class="note-card archive-card" data-id="${note.id}" style="background-color: ${bgColor}; color: ${textColor};">
@@ -3232,8 +3535,9 @@ class KeepNotes {
                         ${note.images.length > 3 ? `<span class="more-images">+${note.images.length - 3}</span>` : ''}
                     </div>
                 ` : ''}
-                ${note.title ? `<h3 class="note-card-title">${this.highlightText(note.title, this.searchQuery)}</h3>` : ''}
-                <p class="note-card-content ${note.type !== 'text' ? 'code-preview' : ''}">${this.highlightText(note.content, this.searchQuery)}</p>
+                ${note.title ? `<h3 class="note-card-title">${this.escapeHtml(note.title)}</h3>` : ''}
+                <div class="note-card-content rich-text-content ${isCode ? 'code-preview' : ''}">${displayContent}</div>
+                ${voiceNotesHtml}
                 ${note.labels && note.labels.length > 0 ? `
                     <div class="note-card-labels">
                         ${note.labels.map(label => `<span class="note-label-chip">${this.escapeHtml(label)}</span>`).join('')}
@@ -3536,6 +3840,25 @@ class KeepNotes {
                 this.openImageViewer(img.src);
             });
         });
+
+        // Voice note play button handlers
+        container.querySelectorAll('.voice-note-play-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const card = btn.closest('.note-card');
+                const noteId = card.dataset.id;
+                const audioIndex = parseInt(btn.dataset.audioIndex);
+
+                // Find the note and play the audio
+                let note = this.notes.find(n => n.id === noteId);
+                if (!note) {
+                    note = this.archive.find(n => n.id === noteId);
+                }
+                if (note && note.voiceNotes && note.voiceNotes[audioIndex]) {
+                    this.playVoiceNote(note.voiceNotes[audioIndex].data, btn);
+                }
+            });
+        });
     }
 
     createNoteCard(note) {
@@ -3591,8 +3914,29 @@ class KeepNotes {
             `;
         }
 
+        let voiceNotesHtml = '';
+        if (note.voiceNotes && note.voiceNotes.length > 0) {
+            voiceNotesHtml = `
+                <div class="note-card-voice-notes">
+                    ${note.voiceNotes.map((vn, index) => `
+                        <div class="note-voice-note-item">
+                            <button class="voice-note-play-btn" data-audio-index="${index}" title="Play voice note">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                            </button>
+                            <span class="voice-note-label">Voice ${index + 1}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
         const isGlobal = note.isGlobal === true;
         const globalClass = isGlobal ? 'global-note' : '';
+
+        // For rich text content, display HTML directly (but sanitized for display)
+        const displayContent = isCode ? this.escapeHtml(note.content) : note.content;
 
         return `
             <div class="note-card ${readOnlyClass} ${globalClass}" data-id="${note.id}" data-global="${isGlobal}" style="background-color: ${note.color}">
@@ -3606,9 +3950,10 @@ class KeepNotes {
                     ${isGlobal ? '<span class="note-global-badge">Global</span>' : ''}
                     ${isCode ? `<span class="note-type-badge">${noteType}</span>` : ''}
                 </div>
-                ${note.content ? `<div class="${contentClass}">${content}</div>` : ''}
+                ${note.content ? `<div class="${contentClass} rich-text-content">${displayContent}</div>` : ''}
                 ${imagesHtml}
                 ${documentsHtml}
+                ${voiceNotesHtml}
                 ${labelsHtml}
                 <div class="note-card-footer">
                     <span class="note-timestamp">${formattedDate}</span>
@@ -3638,7 +3983,28 @@ class KeepNotes {
         const deletedDate = this.formatDate(note.deletedAt);
         const noteType = note.type || 'text';
         const isCode = noteType !== 'text';
-        const contentClass = isCode ? 'note-card-content code-content' : 'note-card-content';
+        const contentClass = isCode ? 'note-card-content code-content' : 'note-card-content rich-text-content';
+
+        // For rich text content, display HTML directly; for code, escape
+        const displayContent = isCode ? this.escapeHtml(note.content) : note.content;
+
+        let voiceNotesHtml = '';
+        if (note.voiceNotes && note.voiceNotes.length > 0) {
+            voiceNotesHtml = `
+                <div class="note-card-voice-notes">
+                    ${note.voiceNotes.map((vn, index) => `
+                        <div class="note-voice-note-item">
+                            <button class="voice-note-play-btn" data-audio-index="${index}" title="Play voice note">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M8 5v14l11-7z"/>
+                                </svg>
+                            </button>
+                            <span class="voice-note-label">Voice ${index + 1}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
 
         return `
             <div class="note-card trash-card" data-id="${note.id}" style="background-color: ${note.color}">
@@ -3646,7 +4012,8 @@ class KeepNotes {
                     ${note.title ? `<div class="note-card-title">${this.escapeHtml(note.title)}</div>` : ''}
                     ${isCode ? `<span class="note-type-badge">${noteType}</span>` : ''}
                 </div>
-                ${note.content ? `<div class="${contentClass}">${this.escapeHtml(note.content)}</div>` : ''}
+                ${note.content ? `<div class="${contentClass}">${displayContent}</div>` : ''}
+                ${voiceNotesHtml}
                 <div class="note-card-footer" style="opacity: 1;">
                     <span class="note-timestamp">Deleted ${deletedDate}</span>
                     <div class="trash-actions">
@@ -3739,6 +4106,474 @@ class KeepNotes {
             this.trash = [];
             this.archive = [];
             this.labels = [];
+        }
+    }
+
+    // ==================== Rich Text Formatting ====================
+
+    execFormatCommand(command, value = null) {
+        const els = this.elements;
+
+        // Focus the contenteditable before executing command
+        if (document.activeElement !== els.noteContent) {
+            els.noteContent.focus();
+        }
+
+        switch(command) {
+            case 'insertCheckbox':
+                this.insertCheckbox();
+                break;
+            case 'fontSize':
+                this.showFontSizePicker();
+                break;
+            case 'createLink':
+                this.insertLink();
+                break;
+            default:
+                document.execCommand(command, false, value);
+        }
+
+        // Update active state of format buttons
+        this.updateFormatButtonStates();
+    }
+
+    insertCheckbox() {
+        const checkbox = document.createElement('div');
+        checkbox.className = 'checkbox-item';
+        checkbox.innerHTML = `<input type="checkbox" onclick="this.parentElement.classList.toggle('checked', this.checked)"><span class="checkbox-text">Item</span>`;
+
+        const selection = window.getSelection();
+        if (selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(checkbox);
+
+            // Position cursor after the checkbox (no extra line break needed - div is block level)
+            const newRange = document.createRange();
+            newRange.setStartAfter(checkbox);
+            newRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+        }
+    }
+
+    showFontSizePicker() {
+        const sizes = ['1', '2', '3', '4', '5', '6', '7'];
+        const currentSize = document.queryCommandValue('fontSize') || '3';
+        const newSizeIndex = (sizes.indexOf(currentSize) + 1) % sizes.length;
+        document.execCommand('fontSize', false, sizes[newSizeIndex]);
+    }
+
+    insertLink() {
+        const url = prompt('Enter URL:', 'https://');
+        if (url && url !== 'https://') {
+            document.execCommand('createLink', false, url);
+        }
+    }
+
+    updateFormatButtonStates() {
+        const els = this.elements;
+        els.formatBtns.forEach(btn => {
+            const command = btn.dataset.command;
+            if (['bold', 'italic', 'underline', 'strikeThrough'].includes(command)) {
+                if (document.queryCommandState(command)) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            }
+        });
+    }
+
+    // Modal formatting commands
+    execModalFormatCommand(command, value = null) {
+        const els = this.elements;
+        if (this.isReadOnlyMode) return;
+
+        // Focus the modal contenteditable before executing command
+        if (document.activeElement !== els.editContent) {
+            els.editContent.focus();
+        }
+
+        switch(command) {
+            case 'insertCheckbox':
+                this.insertModalCheckbox();
+                break;
+            case 'fontSize':
+                this.showModalFontSizePicker();
+                break;
+            case 'createLink':
+                this.insertModalLink();
+                break;
+            default:
+                document.execCommand(command, false, value);
+        }
+
+        // Update active state of format buttons
+        this.updateModalFormatButtonStates();
+
+        // Save changes
+        this.updateNote();
+    }
+
+    insertModalCheckbox() {
+        const checkbox = document.createElement('div');
+        checkbox.className = 'checkbox-item';
+        checkbox.innerHTML = `<input type="checkbox" onclick="this.parentElement.classList.toggle('checked', this.checked)"><span class="checkbox-text">Item</span>`;
+
+        const selection = window.getSelection();
+        if (selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            range.deleteContents();
+            range.insertNode(checkbox);
+
+            // Position cursor after the checkbox (no extra line break needed - div is block level)
+            const newRange = document.createRange();
+            newRange.setStartAfter(checkbox);
+            newRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+        }
+    }
+
+    showModalFontSizePicker() {
+        const sizes = ['1', '2', '3', '4', '5', '6', '7'];
+        const currentSize = document.queryCommandValue('fontSize') || '3';
+        const newSizeIndex = (sizes.indexOf(currentSize) + 1) % sizes.length;
+        document.execCommand('fontSize', false, sizes[newSizeIndex]);
+    }
+
+    insertModalLink() {
+        const url = prompt('Enter URL:', 'https://');
+        if (url && url !== 'https://') {
+            document.execCommand('createLink', false, url);
+        }
+    }
+
+    updateModalFormatButtonStates() {
+        const els = this.elements;
+        els.modalFormatBtns?.forEach(btn => {
+            const command = btn.dataset.command;
+            if (['bold', 'italic', 'underline', 'strikeThrough'].includes(command)) {
+                if (document.queryCommandState(command)) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            }
+        });
+    }
+
+    // ==================== Voice Notes ====================
+
+    async toggleVoiceRecording() {
+        const els = this.elements;
+
+        if (this.isRecording) {
+            this.stopVoiceRecording();
+        } else {
+            await this.startVoiceRecording();
+        }
+    }
+
+    async startVoiceRecording() {
+        const els = this.elements;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream);
+            this.audioChunks = [];
+
+            this.mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    this.audioChunks.push(e.data);
+                }
+            };
+
+            this.mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                this.addVoiceNoteToPreview(audioBlob);
+
+                // Stop all tracks
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            this.mediaRecorder.start();
+            this.isRecording = true;
+
+            // Update UI
+            els.voiceNoteBtn.classList.add('recording');
+            els.voiceNoteBtn.innerHTML = `
+                <div class="recording-indicator"></div>
+            `;
+
+            this.showToast('Recording... Click to stop');
+        } catch (error) {
+            console.error('Error accessing microphone:', error);
+            this.showToast('Could not access microphone');
+        }
+    }
+
+    stopVoiceRecording() {
+        const els = this.elements;
+
+        if (this.mediaRecorder && this.isRecording) {
+            this.mediaRecorder.stop();
+            this.isRecording = false;
+
+            // Reset UI
+            els.voiceNoteBtn.classList.remove('recording');
+            els.voiceNoteBtn.innerHTML = `
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+            `;
+        }
+    }
+
+    addVoiceNoteToPreview(audioBlob) {
+        const els = this.elements;
+
+        // Convert blob to base64 for storage
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64Audio = reader.result;
+            const voiceNote = {
+                id: Date.now(),
+                data: base64Audio,
+                duration: 0,
+                createdAt: new Date().toISOString()
+            };
+
+            this.pendingVoiceNotes.push(voiceNote);
+            this.renderVoiceNotePreviews();
+
+            // Show container
+            els.voiceNoteContainer.style.display = 'block';
+        };
+        reader.readAsDataURL(audioBlob);
+    }
+
+    renderVoiceNotePreviews() {
+        const els = this.elements;
+
+        els.voiceNoteList.innerHTML = this.pendingVoiceNotes.map((vn, index) => `
+            <div class="voice-note-item" data-index="${index}">
+                <button class="voice-note-play" data-voice-index="${index}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                </button>
+                <div class="voice-note-waveform">
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                </div>
+                <span class="voice-note-time">Voice Note ${index + 1}</span>
+                <button class="voice-note-delete" data-delete-index="${index}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        // Attach event handlers
+        els.voiceNoteList.querySelectorAll('.voice-note-play').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.voiceIndex);
+                if (this.pendingVoiceNotes[index]) {
+                    this.playVoiceNote(this.pendingVoiceNotes[index].data, btn);
+                }
+            });
+        });
+
+        els.voiceNoteList.querySelectorAll('.voice-note-delete').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.deleteIndex);
+                this.removeVoiceNote(index);
+            });
+        });
+    }
+
+    playVoiceNote(audioData, btn) {
+        const audio = new Audio(audioData);
+        const originalIcon = btn.innerHTML;
+
+        btn.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            </svg>
+        `;
+
+        audio.onended = () => {
+            btn.innerHTML = originalIcon;
+        };
+
+        audio.play();
+    }
+
+    removeVoiceNote(index) {
+        const els = this.elements;
+        this.pendingVoiceNotes.splice(index, 1);
+        this.renderVoiceNotePreviews();
+
+        if (this.pendingVoiceNotes.length === 0) {
+            els.voiceNoteContainer.style.display = 'none';
+        }
+    }
+
+    // ==================== Modal Voice Notes ====================
+
+    async toggleModalVoiceRecording() {
+        if (this.isReadOnlyMode || !this.editingNoteId) return;
+
+        if (this.isRecording) {
+            this.stopModalVoiceRecording();
+        } else {
+            await this.startModalVoiceRecording();
+        }
+    }
+
+    async startModalVoiceRecording() {
+        const els = this.elements;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream);
+            this.audioChunks = [];
+
+            this.mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    this.audioChunks.push(e.data);
+                }
+            };
+
+            this.mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                this.addModalVoiceNote(audioBlob);
+                stream.getTracks().forEach(track => track.stop());
+            };
+
+            this.mediaRecorder.start();
+            this.isRecording = true;
+
+            // Update UI
+            els.modalVoiceNoteBtn.classList.add('recording');
+            els.modalVoiceNoteBtn.innerHTML = `<div class="recording-indicator"></div>`;
+            this.showToast('Recording... Click to stop');
+        } catch (error) {
+            console.error('Error accessing microphone:', error);
+            this.showToast('Could not access microphone');
+        }
+    }
+
+    stopModalVoiceRecording() {
+        const els = this.elements;
+
+        if (this.mediaRecorder && this.isRecording) {
+            this.mediaRecorder.stop();
+            this.isRecording = false;
+
+            // Reset UI
+            els.modalVoiceNoteBtn.classList.remove('recording');
+            els.modalVoiceNoteBtn.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+                </svg>
+            `;
+        }
+    }
+
+    addModalVoiceNote(audioBlob) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64Audio = reader.result;
+            const voiceNote = {
+                id: Date.now(),
+                data: base64Audio,
+                duration: 0,
+                createdAt: new Date().toISOString()
+            };
+
+            // Add to the current note
+            const note = this.notes.find(n => n.id === this.editingNoteId);
+            if (note) {
+                if (!note.voiceNotes) note.voiceNotes = [];
+                note.voiceNotes.push(voiceNote);
+                this.saveData();
+                this.renderModalVoiceNotes(note.voiceNotes);
+                this.renderNotes();
+                this.showToast('Voice note added');
+            }
+        };
+        reader.readAsDataURL(audioBlob);
+    }
+
+    renderModalVoiceNotes(voiceNotes) {
+        const els = this.elements;
+
+        if (!voiceNotes || voiceNotes.length === 0) {
+            els.modalVoiceNotesContainer.style.display = 'none';
+            els.modalVoiceNotesList.innerHTML = '';
+            return;
+        }
+
+        els.modalVoiceNotesContainer.style.display = 'block';
+        els.modalVoiceNotesList.innerHTML = voiceNotes.map((vn, index) => `
+            <div class="voice-note-item" data-index="${index}">
+                <button class="voice-note-play" data-voice-index="${index}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                </button>
+                <div class="voice-note-waveform">
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                    <div class="waveform-bar"></div>
+                </div>
+                <span class="voice-note-time">Voice Note ${index + 1}</span>
+                <button class="voice-note-delete" data-delete-index="${index}">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        // Attach event handlers
+        els.modalVoiceNotesList.querySelectorAll('.voice-note-play').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.voiceIndex);
+                const note = this.notes.find(n => n.id === this.editingNoteId);
+                if (note && note.voiceNotes && note.voiceNotes[index]) {
+                    this.playVoiceNote(note.voiceNotes[index].data, btn);
+                }
+            });
+        });
+
+        els.modalVoiceNotesList.querySelectorAll('.voice-note-delete').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const index = parseInt(btn.dataset.deleteIndex);
+                this.removeModalVoiceNote(index);
+            });
+        });
+    }
+
+    removeModalVoiceNote(index) {
+        if (this.isReadOnlyMode || !this.editingNoteId) return;
+
+        const note = this.notes.find(n => n.id === this.editingNoteId);
+        if (note && note.voiceNotes) {
+            note.voiceNotes.splice(index, 1);
+            this.saveData();
+            this.renderModalVoiceNotes(note.voiceNotes);
+            this.renderNotes();
+            this.showToast('Voice note removed');
         }
     }
 
